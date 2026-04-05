@@ -7,7 +7,7 @@
 import Foundation
 import OSCKitCore
 
-/// Internal protocol that TCP-based OSC classes adopt in order to handle incoming OSC data.
+/// Internal protocol that UDP and TCP networking classes adopt in order to handle incoming OSC data.
 protocol _OSCHandlerProtocol: AnyObject where Self: Sendable {
     var queue: DispatchQueue { get }
     var timeTagMode: OSCTimeTagMode { get }
