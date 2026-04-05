@@ -145,6 +145,9 @@ extension OSCTCPServer {
         _generateConnectedNotification(remoteHost: remoteHost, remotePort: remotePort, clientID: clientID)
     }
     
+    /// Removes a client connection from the internal dictionary without closing its socket.
+    /// This is called from the client's own disconnect handler after the connection has already
+    /// been terminated by the Network framework.
     func _removeClient(clientID: OSCTCPClientSessionID) {
         clientsLock.withLock {
             _clients[clientID] = nil

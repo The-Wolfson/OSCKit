@@ -132,7 +132,9 @@ extension OSCTCPClient {
         _isConnected = false
     }
     
-    /// Continuously receive TCP data on the connection.
+    /// Continuously schedules receive operations on the TCP connection.
+    /// Each completed receive immediately re-schedules the next one, forming a read loop
+    /// that runs until an error occurs or the connection signals `isComplete`.
     private func _startReceiving(on connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, isComplete, error in
             guard let self else { return }

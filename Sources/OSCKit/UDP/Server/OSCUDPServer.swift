@@ -142,7 +142,8 @@ extension OSCUDPServer {
         }
     }
     
-    /// Extract a host string and port from an NWConnection's remote endpoint.
+    /// Extracts the hostname string and port number from the remote endpoint of an NWConnection.
+    /// Returns empty string and port 0 if the endpoint is not of `hostPort` type.
     static func _remoteHostPort(from connection: NWConnection) -> (host: String, port: UInt16) {
         if case .hostPort(let host, let port) = connection.endpoint {
             return (String(describing: host), port.rawValue)

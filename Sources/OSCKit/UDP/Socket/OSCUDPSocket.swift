@@ -261,8 +261,10 @@ extension OSCUDPSocket {
         try send(.message(oscMessage), to: host, port: port)
     }
     
-    /// Internal: Create an outgoing NWConnection bound to the same local port as the listener, then
-    /// send data and cancel the connection after delivery.
+    /// Internal: Create an ephemeral NWConnection bound to the same local port as the listener, send
+    /// data, and cancel the connection after delivery. Binding to the listener's local port ensures
+    /// the remote host sees the same port for both incoming and outgoing traffic (required for
+    /// devices like the Behringer X32 that respond to the sender's port).
     private func _send(data: Data, toHost host: String, port: UInt16) {
         let params = NWParameters.udp
         
