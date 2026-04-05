@@ -85,12 +85,9 @@ extension OSCTCPServerDelegate: GCDAsyncSocketDelegate {
             clients[clientID] = nil
         }
         
-        // errors should only ever be of type `GCDAsyncSocketError`
-        var error = err as? GCDAsyncSocketError
-        // CocoaAsyncSocket populates `err` with GCDAsyncSocketError.closedError
-        // whenever the remote peer closes its connection intentionally,
-        // so we'll interpret that as a non-error condition
-        if error?.code == GCDAsyncSocketError.closedError {
+        var error: NetworkError? = NetworkError(err as? GCDAsyncSocketError)
+        
+        if error == .closed {
             error = nil
         }
         

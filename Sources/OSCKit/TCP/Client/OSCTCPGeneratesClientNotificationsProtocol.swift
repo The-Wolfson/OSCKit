@@ -12,7 +12,7 @@ protocol _OSCTCPGeneratesClientNotificationsProtocol {
     func _generateConnectedNotification()
     
     func _generateDisconnectedNotification(
-        error: GCDAsyncSocketError?
+        error: NetworkError?
     )
 }
 

@@ -144,7 +144,7 @@ extension OSCTCPClient: _OSCTCPGeneratesClientNotificationsProtocol {
         notificationHandler?(notif)
     }
     
-    func _generateDisconnectedNotification(error: GCDAsyncSocketError?) {
+    func _generateDisconnectedNotification(error: NetworkError?) {
         let notif: Notification = .disconnected(error: error)
         notificationHandler?(notif)
     }
