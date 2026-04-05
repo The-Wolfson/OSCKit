@@ -12,7 +12,7 @@ import Network
 
 /// Internal protocol that TCP-based OSC classes adopt in order to send OSC packets.
 protocol _OSCTCPSendProtocol: AnyObject where Self: Sendable {
-    var _tcpSendConnection: NWConnection? { get }
+    var _tcpConnection: NWConnection? { get }
     var framingMode: OSCTCPFramingMode { get }
 }
 
@@ -61,7 +61,7 @@ extension _OSCTCPSendProtocol {
         //     )
         // }
         
-        guard let _tcpSendConnection else { throw OSCNetworkError.noRemoteHost }
+        guard let _tcpConnection else { throw OSCNetworkError.noRemoteHost }
         
         // frame data
         let data: Data = switch framingMode {
@@ -80,7 +80,7 @@ extension _OSCTCPSendProtocol {
         }
         
         // send packet
-        _tcpSendConnection.send(content: data, completion: .idempotent)
+        _tcpConnection.send(content: data, completion: .idempotent)
     }
 }
 

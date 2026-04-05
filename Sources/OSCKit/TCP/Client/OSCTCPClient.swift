@@ -153,7 +153,7 @@ extension OSCTCPClient {
 
 extension OSCTCPClient: _OSCTCPSendProtocol {
     
-    var _tcpSendConnection: NWConnection? { tcpConnection }
+    var _tcpConnection: NWConnection? { tcpConnection }
     
     /// Send an OSC bundle or message to the host.
     public func send(_ oscPacket: OSCPacket) throws {

@@ -13,13 +13,13 @@ import Network
 extension OSCTCPServer {
     /// Internal class encapsulating a remote client connection session accepted by a local ``OSCTCPServer``.
     final class ClientConnection {
-        let networkConnection: NWConnection
+        let tcpConnection: NWConnection
         let remoteHost: String // cached, since NWConnection resets it upon disconnection
         let remotePort: UInt16 // cached, since NWConnection resets it upon disconnection
         let clientId: OSCTCPClientSessionID
         let framingMode: OSCTCPFramingMode
         let queue: DispatchQueue
-        weak var server: OSCTCPServer?
+        weak var tcpServer: OSCTCPServer?
         
         init(
             networkConnection: NWConnection,
@@ -28,7 +28,7 @@ extension OSCTCPServer {
             queue: DispatchQueue,
             server: OSCTCPServer?
         ) {
-            self.networkConnection = networkConnection
+            self.tcpConnection = networkConnection
             self.clientId = clientId
             
             switch networkConnection.endpoint {
@@ -42,7 +42,7 @@ extension OSCTCPServer {
             
             self.framingMode = framingMode
             self.queue = queue
-            self.server = server
+            self.tcpServer = server
                         
             networkConnection.stateUpdateHandler = { state in
                 switch state {
@@ -73,15 +73,15 @@ extension OSCTCPServer.ClientConnection: @unchecked Sendable { } // TODO: unchec
 
 extension OSCTCPServer.ClientConnection {
     func close() {
-        networkConnection.cancel()
-        server = nil
+        tcpConnection.cancel()
+        tcpServer = nil
     }
 }
 
 // MARK: - Communication
 
 extension OSCTCPServer.ClientConnection: _OSCTCPSendProtocol {
-    var _tcpSendConnection: NWConnection? { networkConnection }
+    var _tcpConnection: NWConnection? { tcpConnection }
     
     func send(_ oscPacket: OSCPacket) throws {
         try _send(oscPacket)
@@ -102,7 +102,7 @@ extension OSCTCPServer.ClientConnection: _OSCTCPSendProtocol {
                 self.close()
             } else {
                 if let data, !data.isEmpty {
-                    self.server?._handle(receivedData: data, remoteHost: self.remoteHost, remotePort: self.remotePort)
+                    self.tcpServer?._handle(receivedData: data, remoteHost: self.remoteHost, remotePort: self.remotePort)
                 }
                 self._startReceiving(on: connection)
             }
@@ -112,11 +112,11 @@ extension OSCTCPServer.ClientConnection: _OSCTCPSendProtocol {
 
 extension OSCTCPServer.ClientConnection: _OSCTCPHandlerProtocol {
     var timeTagMode: OSCTimeTagMode {
-        server?.timeTagMode ?? .ignore
+        tcpServer?.timeTagMode ?? .ignore
     }
     
     var receiveHandler: OSCHandlerBlock? {
-        server?.receiveHandler
+        tcpServer?.receiveHandler
     }
 }
 
@@ -125,7 +125,7 @@ extension OSCTCPServer.ClientConnection: _OSCTCPGeneratesClientNotificationsProt
     // `socketDidDisconnect(...)` in GCDAsyncSocketDelegate, but we have to implement this due to
     // other protocol requirements
     func _generateConnectedNotification() {
-        server?._generateConnectedNotification(
+        tcpServer?._generateConnectedNotification(
             remoteHost: remoteHost,
             remotePort: remotePort,
             clientID: clientId
@@ -136,7 +136,7 @@ extension OSCTCPServer.ClientConnection: _OSCTCPGeneratesClientNotificationsProt
     // `socketDidDisconnect(...)` in GCDAsyncSocketDelegate, but we have to implement this due to
     // other protocol requirements
     func _generateDisconnectedNotification(error: NWError?) {
-        server?._generateDisconnectedNotification(
+        tcpServer?._generateDisconnectedNotification(
             remoteHost: remoteHost,
             remotePort: remotePort,
             clientID: clientId,

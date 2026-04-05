@@ -23,7 +23,7 @@ import Network
 /// What differentiates this server class from the client class is that the server is designed to listen for inbound
 /// connections. (Whereas, the client class is designed to connect to a remote TCP server.)
 public final class OSCTCPServer {
-    private var networkListener: NWListener?
+    private var tcpListener: NWListener?
     private var _clients: [OSCTCPClientSessionID: ClientConnection] = [:]
     let queue: DispatchQueue
     var receiveHandler: OSCHandlerBlock?
@@ -37,7 +37,7 @@ public final class OSCTCPServer {
     
     /// Local network port.
     public var localPort: UInt16 {
-        networkListener?.port?.rawValue ?? 0
+        tcpListener?.port?.rawValue ?? 0
     }
 
     private var _localPort: UInt16?
@@ -47,7 +47,7 @@ public final class OSCTCPServer {
     
     /// Returns a boolean indicating whether the OSC server has been started.
     public var isStarted: Bool {
-        networkListener?.state == .ready
+        tcpListener?.state == .ready
     }
     
     /// TCP packet framing mode.
@@ -116,7 +116,7 @@ extension OSCTCPServer {
             self._acceptNewConnection(connection)
         }
         
-        self.networkListener = tcpListener
+        self.tcpListener = tcpListener
         tcpListener.start(queue: queue)
     }
     
@@ -126,8 +126,8 @@ extension OSCTCPServer {
         closeClients()
         
         // close server
-        networkListener?.cancel()
-        networkListener = nil
+        tcpListener?.cancel()
+        tcpListener = nil
     }
     
     private func _acceptNewConnection(_ connection: NWConnection) {
@@ -182,7 +182,7 @@ extension OSCTCPServer {
 // MARK: - Communication
 
 extension OSCTCPServer: _OSCTCPSendProtocol {
-    var _tcpSendConnection: NWConnection? { nil }
+    var _tcpConnection: NWConnection? { nil }
     
     /// Send an OSC bundle or message to all connected clients.
     public func send(_ oscPacket: OSCPacket) throws {
