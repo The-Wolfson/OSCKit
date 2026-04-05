@@ -4,6 +4,8 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
+import Network
+
 #if !os(watchOS)
 
 extension OSCTCPServer {
@@ -14,13 +16,13 @@ extension OSCTCPServer {
         
         /// The server was notified that a remote client connection has closed.
         /// If the disconnection was a result of an error, the error will be non-nil.
-        case disconnected(remoteHost: String, remotePort: UInt16, clientID: OSCTCPClientSessionID, error: NetworkError?)
+        case disconnected(remoteHost: String, remotePort: UInt16, clientID: OSCTCPClientSessionID, error: NWError?)
     }
 }
 
 extension OSCTCPServer.Notification: Equatable { }
     
-extension OSCTCPServer.Notification: Hashable { }
+//extension OSCTCPServer.Notification: Hashable { }
     
 extension OSCTCPServer.Notification: Sendable { }
 

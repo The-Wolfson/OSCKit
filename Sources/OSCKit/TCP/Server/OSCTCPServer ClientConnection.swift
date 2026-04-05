@@ -6,36 +6,59 @@
 
 #if !os(watchOS)
 
-@preconcurrency import CocoaAsyncSocket
 import Foundation
 import OSCKitCore
+import Network
 
 extension OSCTCPServer {
     /// Internal class encapsulating a remote client connection session accepted by a local ``OSCTCPServer``.
     final class ClientConnection {
-        weak var delegate: OSCTCPServerDelegate?
-        let tcpSocket: GCDAsyncSocket
-        let remoteHost: String // cached, since GCDAsyncSocket resets it upon disconnection
-        let remotePort: UInt16 // cached, since GCDAsyncSocket resets it upon disconnection
-        let tcpDelegate: OSCTCPClientDelegate
-        let tcpSocketTag: Int
+        let networkConnection: NWConnection
+        let remoteHost: String // cached, since NWConnection resets it upon disconnection
+        let remotePort: UInt16 // cached, since NWConnection resets it upon disconnection
+        let clientId: OSCTCPClientSessionID
         let framingMode: OSCTCPFramingMode
+        let queue: DispatchQueue
+        weak var server: OSCTCPServer?
         
         init(
-            tcpSocket: GCDAsyncSocket,
-            tcpSocketTag: Int,
+            networkConnection: NWConnection,
+            clientId: OSCTCPClientSessionID,
             framingMode: OSCTCPFramingMode,
-            delegate: OSCTCPServerDelegate?
+            queue: DispatchQueue,
+            server: OSCTCPServer?
         ) {
-            self.tcpSocket = tcpSocket
-            remoteHost = tcpSocket.connectedHost ?? ""
-            remotePort = tcpSocket.connectedPort
-            self.tcpSocketTag = tcpSocketTag
-            self.framingMode = framingMode
-            self.delegate = delegate
+            self.networkConnection = networkConnection
+            self.clientId = clientId
             
-            tcpDelegate = OSCTCPClientDelegate()
-            tcpDelegate.oscServer = self
+            switch networkConnection.endpoint {
+                case .hostPort(let host, let port):
+                    self.remoteHost = host.debugDescription
+                    self.remotePort = port.rawValue
+                default:
+                    self.remoteHost = ""
+                    self.remotePort = 0
+            }
+            
+            self.framingMode = framingMode
+            self.queue = queue
+            self.server = server
+                        
+            networkConnection.stateUpdateHandler = { state in
+                switch state {
+                case .cancelled:
+                    server?.disconnectClient(clientID: clientId)
+                    self._generateDisconnectedNotification(error: nil)
+                case .failed(let error):
+                    server?.disconnectClient(clientID: clientId)
+                    self._generateDisconnectedNotification(error: error)
+                default: return
+                }
+            }
+            
+            networkConnection.start(queue: queue)
+            
+            _startReceiving(on: networkConnection)
         }
         
         deinit {
@@ -50,38 +73,50 @@ extension OSCTCPServer.ClientConnection: @unchecked Sendable { } // TODO: unchec
 
 extension OSCTCPServer.ClientConnection {
     func close() {
-        tcpSocket.disconnectAfterReadingAndWriting()
-        tcpSocket.delegate = nil
+        networkConnection.cancel()
+        server = nil
     }
 }
 
 // MARK: - Communication
 
 extension OSCTCPServer.ClientConnection: _OSCTCPSendProtocol {
+    var _tcpSendConnection: NWConnection? { networkConnection }
+    
     func send(_ oscPacket: OSCPacket) throws {
-        try _send(oscPacket, tag: tcpSocketTag)
+        try _send(oscPacket)
     }
     
     func send(_ oscBundle: OSCBundle) throws {
-        try _send(oscBundle, tag: tcpSocketTag)
+        try _send(oscBundle)
     }
     
     func send(_ oscMessage: OSCMessage) throws {
-        try _send(oscMessage, tag: tcpSocketTag)
+        try _send(oscMessage)
+    }
+    
+    //Network does not register remote changes to state with the local NWConnection, so a rolling check of data is needed to see if the connection is terminated.
+    func _startReceiving(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, context, isComplete, error in
+            if isComplete {
+                self.close()
+            } else {
+                if let data, !data.isEmpty {
+                    self.server?._handle(receivedData: data, remoteHost: self.remoteHost, remotePort: self.remotePort)
+                }
+                self._startReceiving(on: connection)
+            }
+        }
     }
 }
 
 extension OSCTCPServer.ClientConnection: _OSCTCPHandlerProtocol {
-    var queue: DispatchQueue {
-        tcpSocket.delegateQueue ?? .global()
-    }
-    
     var timeTagMode: OSCTimeTagMode {
-        delegate?.oscServer?.timeTagMode ?? .ignore
+        server?.timeTagMode ?? .ignore
     }
     
     var receiveHandler: OSCHandlerBlock? {
-        delegate?.oscServer?.receiveHandler
+        server?.receiveHandler
     }
 }
 
@@ -90,21 +125,21 @@ extension OSCTCPServer.ClientConnection: _OSCTCPGeneratesClientNotificationsProt
     // `socketDidDisconnect(...)` in GCDAsyncSocketDelegate, but we have to implement this due to
     // other protocol requirements
     func _generateConnectedNotification() {
-        delegate?.oscServer?._generateConnectedNotification(
+        server?._generateConnectedNotification(
             remoteHost: remoteHost,
             remotePort: remotePort,
-            clientID: tcpSocketTag
+            clientID: clientId
         )
     }
     
     // note that this is never called because when a remote connection closes, its socket does not fire
     // `socketDidDisconnect(...)` in GCDAsyncSocketDelegate, but we have to implement this due to
     // other protocol requirements
-    func _generateDisconnectedNotification(error: NetworkError?) {
-        delegate?.oscServer?._generateDisconnectedNotification(
+    func _generateDisconnectedNotification(error: NWError?) {
+        server?._generateDisconnectedNotification(
             remoteHost: remoteHost,
             remotePort: remotePort,
-            clientID: tcpSocketTag,
+            clientID: clientId,
             error: error
         )
     }

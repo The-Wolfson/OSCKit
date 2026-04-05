@@ -6,13 +6,13 @@
 
 #if !os(watchOS)
 
-@preconcurrency import CocoaAsyncSocket
+import Network
 
 protocol _OSCTCPGeneratesClientNotificationsProtocol {
     func _generateConnectedNotification()
     
     func _generateDisconnectedNotification(
-        error: NetworkError?
+        error: NWError?
     )
 }
 

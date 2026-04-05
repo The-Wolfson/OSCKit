@@ -6,9 +6,9 @@
 
 #if !os(watchOS)
 
-@preconcurrency import CocoaAsyncSocket
 import Foundation
 import OSCKitCore
+import Network
 
 /// Listens on a local port for TCP connections in order to send and receive OSC packets over the network.
 ///
@@ -23,8 +23,8 @@ import OSCKitCore
 /// What differentiates this server class from the client class is that the server is designed to listen for inbound
 /// connections. (Whereas, the client class is designed to connect to a remote TCP server.)
 public final class OSCTCPServer {
-    let tcpSocket: GCDAsyncSocket
-    let tcpDelegate: OSCTCPServerDelegate
+    private var networkListener: NWListener?
+    private var _clients: [OSCTCPClientSessionID: ClientConnection] = [:]
     let queue: DispatchQueue
     var receiveHandler: OSCHandlerBlock?
     var notificationHandler: NotificationHandlerBlock?
@@ -37,7 +37,7 @@ public final class OSCTCPServer {
     
     /// Local network port.
     public var localPort: UInt16 {
-        tcpSocket.localPort
+        networkListener?.port?.rawValue ?? 0
     }
 
     private var _localPort: UInt16?
@@ -46,7 +46,9 @@ public final class OSCTCPServer {
     public let interface: String?
     
     /// Returns a boolean indicating whether the OSC server has been started.
-    public private(set) var isStarted: Bool = false
+    public var isStarted: Bool {
+        networkListener?.state == .ready
+    }
     
     /// TCP packet framing mode.
     public let framingMode: OSCTCPFramingMode
@@ -82,10 +84,6 @@ public final class OSCTCPServer {
         let queue = queue ?? DispatchQueue(label: "com.orchetect.OSCKit.OSCTCPServer.queue")
         self.queue = queue
         self.receiveHandler = receiveHandler
-        
-        tcpDelegate = OSCTCPServerDelegate(framingMode: framingMode)
-        tcpSocket = GCDAsyncSocket(delegate: tcpDelegate, delegateQueue: queue, socketQueue: nil)
-        tcpDelegate.oscServer = self
     }
     
     deinit {
@@ -102,32 +100,93 @@ extension OSCTCPServer {
     public func start() throws {
         guard !isStarted else { return }
         
-        try tcpSocket.accept(
-            onInterface: interface,
-            port: _localPort ?? 0 // 0 causes system to assign random open port
-        )
+        let parameters = NWParameters.tcp
         
-        isStarted = true
+        if let interface {
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+                host: NWEndpoint.Host(interface),
+                port: NWEndpoint.Port(rawValue: _localPort ?? 0) ?? .any
+            )
+        }
+
+        let tcpListener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: _localPort ?? 0) ?? .any)
+        
+        tcpListener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            self._acceptNewConnection(connection)
+        }
+        
+        self.networkListener = tcpListener
+        tcpListener.start(queue: queue)
     }
     
     /// Closes any open client connections and stops listening for inbound connection requests.
     public func stop() {
         // disconnect all clients
-        tcpDelegate.closeClients()
+        closeClients()
         
         // close server
-        tcpSocket.disconnectAfterWriting()
+        networkListener?.cancel()
+        networkListener = nil
+    }
+    
+    private func _acceptNewConnection(_ connection: NWConnection) {
+        // add new connection to connections dictionary
+        let clientID = newClientID()
+        let newConnection = OSCTCPServer.ClientConnection(
+            networkConnection: connection,
+            clientId: clientID,
+            framingMode: framingMode,
+            queue: queue,
+            server: self
+        )
         
-        isStarted = false
+        _clients[clientID] = newConnection
+        
+        // send notification
+        _generateConnectedNotification(
+            remoteHost: newConnection.remoteHost,
+            remotePort: newConnection.remotePort,
+            clientID: clientID
+        )
+    }
+}
+
+///Old `OSCTCPServerDelegate` methods
+extension OSCTCPServer {
+    /// Close connections for any connected clients and remove them from the list of connected clients.
+    func closeClients() {
+        for clientID in _clients.keys {
+            closeClient(clientID)
+        }
+    }
+    
+    /// Close a connection and remove it from the list of connected clients.
+    func closeClient(_ clientID: Int) {
+        _clients[clientID]?.close()
+        _clients[clientID] = nil
+    }
+    
+    /// Generate a new client ID that is not currently in use by any connected client(s).
+    private func newClientID() -> OSCTCPClientSessionID {
+        var clientID: Int = 0
+        while clientID == 0 || clients.keys.contains(clientID) {
+            // don't allow 0 or negative numbers
+            clientID = Int.random(in: 1 ... Int.max)
+        }
+        assert(clientID > 0)
+        return clientID
     }
 }
 
 // MARK: - Communication
 
 extension OSCTCPServer: _OSCTCPSendProtocol {
+    var _tcpSendConnection: NWConnection? { nil }
+    
     /// Send an OSC bundle or message to all connected clients.
     public func send(_ oscPacket: OSCPacket) throws {
-        let clientIDs = Array(tcpDelegate.clients.keys)
+        let clientIDs = Array(_clients.keys)
         
         try send(oscPacket, toClientIDs: clientIDs)
     }
@@ -161,11 +220,9 @@ extension OSCTCPServer: _OSCTCPSendProtocol {
     
     /// Send an OSC bundle or message to an individual connected client.
     func _send(_ oscPacket: OSCPacket, toClientID clientID: Int) throws {
-        guard let connection = tcpDelegate.clients[clientID] else {
-            throw GCDAsyncUdpSocketError(
-                .badParamError,
-                userInfo: ["Reason": "OSC TCP client socket with ID \(clientID) not found (not connected)."]
-            )
+        let connection = _clients[clientID]
+        guard let connection else {
+            throw OSCNetworkError.clientNotFound(id: clientID)
         }
         
         try connection.send(oscPacket)
@@ -196,7 +253,7 @@ extension OSCTCPServer: _OSCTCPGeneratesServerNotificationsProtocol {
         remoteHost: String,
         remotePort: UInt16,
         clientID: OSCTCPClientSessionID,
-        error: NetworkError?
+        error: NWError?
     ) {
         let notif: Notification = .disconnected(remoteHost: remoteHost, remotePort: remotePort, clientID: clientID, error: error)
         notificationHandler?(notif)
@@ -234,7 +291,7 @@ extension OSCTCPServer {
     /// > upon each newly-made connection. For this reason, these IDs should not be stored persistently, but instead
     /// > queried from the OSC TCP server when a client connects or analyzing currently-connected clients.
     public var clients: [OSCTCPClientSessionID: (host: String, port: UInt16)] {
-        tcpDelegate.clients
+        _clients
             .reduce(into: [:] as [OSCTCPClientSessionID: (host: String, port: UInt16)]) { base, element in
                 base[element.key] = (
                     host: element.value.remoteHost,
@@ -245,7 +302,7 @@ extension OSCTCPServer {
     
     /// Disconnect a connected client from the server.
     public func disconnectClient(clientID: OSCTCPClientSessionID) {
-        tcpDelegate.closeClient(clientID: clientID)
+        closeClient(clientID)
     }
 }
 

@@ -4,9 +4,9 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
+import Network
 
-@preconcurrency import CocoaAsyncSocket
+#if !os(watchOS)
 
 protocol _OSCTCPGeneratesServerNotificationsProtocol {
     func _generateConnectedNotification(
@@ -19,7 +19,7 @@ protocol _OSCTCPGeneratesServerNotificationsProtocol {
         remoteHost: String,
         remotePort: UInt16,
         clientID: OSCTCPClientSessionID,
-        error: NetworkError?
+        error: NWError?
     )
 }
 

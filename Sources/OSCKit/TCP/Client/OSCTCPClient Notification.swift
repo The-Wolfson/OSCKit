@@ -4,6 +4,8 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
+import Network
+
 #if !os(watchOS)
 
 extension OSCTCPClient {
@@ -14,13 +16,13 @@ extension OSCTCPClient {
         
         /// The client was disconnected from the remote server.
         /// If the disconnection was a result of an error, the error will be non-nil.
-        case disconnected(error: NetworkError?)
+        case disconnected(error: NWError?)
     }
 }
 
 extension OSCTCPClient.Notification: Equatable { }
     
-extension OSCTCPClient.Notification: Hashable { }
+//extension OSCTCPClient.Notification: Hashable { }
     
 extension OSCTCPClient.Notification: Sendable { }
 
