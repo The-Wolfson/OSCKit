@@ -7,7 +7,6 @@
 import Foundation
 import Testing
 
-#if !os(watchOS)
 
 func wait(
     expect condition: @Sendable () async throws -> Bool,
@@ -43,7 +42,6 @@ func wait(
     try #require(await condition(), comment, sourceLocation: sourceLocation)
 }
 
-#endif
 
 /// Use as a condition for individual tests that rely on stable/precise system timing.
 func isSystemTimingStable(

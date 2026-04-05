@@ -4,7 +4,6 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
 
 @testable import OSCKit
 import Testing
@@ -110,4 +109,3 @@ import Testing
     }
 }
 
-#endif

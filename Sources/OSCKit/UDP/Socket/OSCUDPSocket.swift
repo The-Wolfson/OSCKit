@@ -4,10 +4,9 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
-
-@preconcurrency import CocoaAsyncSocket
 import Foundation
+import Network
+import OSCKitCore
 
 /// Sends and receives OSC packets over the network by binding a single local UDP port to both send
 /// OSC packets from and listen for incoming packets.
@@ -22,8 +21,7 @@ import Foundation
 /// example: if an OSC message was sent from port 8000 to the X32's port 10023, the X32 will respond
 /// by sending OSC messages back to you on port 8000.
 public final class OSCUDPSocket {
-    let udpSocket: GCDAsyncUdpSocket
-    let udpDelegate = OSCUDPServerDelegate()
+    private var udpListener: NWListener?
     let queue: DispatchQueue
     var receiveHandler: OSCHandlerBlock?
     
@@ -44,10 +42,9 @@ public final class OSCUDPSocket {
     /// > Note:
     /// >
     /// > If `localPort` was not specified at the time of initialization, reading this
-    /// > property may return a value of `0` until the first successful call to ``send(_:to:port:)-(OSCPacket,_,_)``
-    /// > is made.
+    /// > property may return a value of `0` until ``start()`` has been called and the listener is ready.
     public var localPort: UInt16 {
-        udpSocket.localPort()
+        udpListener?.port?.rawValue ?? _localPort ?? 0
     }
 
     private var _localPort: UInt16?
@@ -131,9 +128,6 @@ public final class OSCUDPSocket {
         let queue = queue ?? DispatchQueue(label: "com.orchetect.OSCKit.OSCUDPSocket.queue")
         self.queue = queue
         self.receiveHandler = receiveHandler
-        
-        udpSocket = GCDAsyncUdpSocket(delegate: udpDelegate, delegateQueue: queue, socketQueue: nil)
-        udpDelegate.oscServer = self
     }
 }
 
@@ -146,21 +140,68 @@ extension OSCUDPSocket {
     public func start() throws {
         guard !isStarted else { return }
         
-        try udpSocket.enableBroadcast(isIPv4BroadcastEnabled)
-        try udpSocket.bind(
-            toPort: _localPort ?? 0, // 0 causes system to assign random open port
-            interface: interface
-        )
-        try udpSocket.beginReceiving()
+        let params = NWParameters.udp
+        
+        if isIPv4BroadcastEnabled {
+            if #available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *) {
+                params.allowBroadcast = true
+            }
+        }
+        
+        // Allow port reuse so the listener and outgoing connections can share the same local port.
+        if #available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *) {
+            params.allowLocalEndpointReuse = true
+        }
+        
+        let port: NWEndpoint.Port = _localPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+        let listener = try NWListener(using: params, on: port)
+        
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            connection.start(queue: self.queue)
+            self._receiveNext(on: connection)
+        }
+        
+        self.udpListener = listener
+        listener.start(queue: queue)
         
         isStarted = true
     }
     
     /// Stops listening for data and closes the OSC port.
     public func stop() {
-        udpSocket.close()
+        udpListener?.cancel()
+        udpListener = nil
         
         isStarted = false
+    }
+    
+    /// Schedules the next receive on a UDP connection accepted by the listener.
+    private func _receiveNext(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, _, error in
+            guard let self else { return }
+            
+            if let data, !data.isEmpty {
+                let (remoteHost, remotePort) = OSCUDPServer._remoteHostPort(from: connection)
+                self._handleReceived(data: data, remoteHost: remoteHost, remotePort: remotePort)
+            }
+            
+            if error == nil {
+                self._receiveNext(on: connection)
+            }
+        }
+    }
+    
+    /// Parse and dispatch incoming OSC data.
+    private func _handleReceived(data: Data, remoteHost: String, remotePort: UInt16) {
+        do {
+            guard let packet = try OSCPacket(from: data) else { return }
+            _handle(packet: packet, remoteHost: remoteHost, remotePort: remotePort)
+        } catch {
+            #if DEBUG
+            print("OSC parse error: \(error.localizedDescription)")
+            #endif
+        }
     }
 }
 
@@ -179,31 +220,17 @@ extension OSCUDPSocket {
         port: UInt16? = nil
     ) throws {
         guard isStarted else {
-            throw GCDAsyncUdpSocketError(
-                .closedError,
-                userInfo: ["Reason": "OSC socket has not been started yet."]
-            )
+            throw OSCSocketError.notStarted
         }
         
         guard let toHost = host ?? remoteHost else {
-            throw GCDAsyncUdpSocketError(
-                .badParamError,
-                userInfo: [
-                    "Reason":
-                        "Remote host is not specified in OSCUDPSocket.remoteHost property or in host parameter in call to send()."
-                ]
-            )
+            throw OSCSocketError.noRemoteHost
         }
         
+        let toPort = port ?? remotePort
         let data = try oscPacket.rawData()
         
-        udpSocket.send(
-            data,
-            toHost: toHost,
-            port: port ?? remotePort,
-            withTimeout: 1.0,
-            tag: 0
-        )
+        _send(data: data, toHost: toHost, port: toPort)
     }
     
     /// Send an OSC bundle to the remote host.
@@ -233,6 +260,35 @@ extension OSCUDPSocket {
     ) throws {
         try send(.message(oscMessage), to: host, port: port)
     }
+    
+    /// Internal: Create an outgoing NWConnection bound to the same local port as the listener, then
+    /// send data and cancel the connection after delivery.
+    private func _send(data: Data, toHost host: String, port: UInt16) {
+        let params = NWParameters.udp
+        
+        if isIPv4BroadcastEnabled {
+            if #available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *) {
+                params.allowBroadcast = true
+            }
+        }
+        
+        // Bind outgoing connection to the same local port so the remote host sees our listener port
+        // as the source port (required for devices like Behringer X32).
+        let boundLocalPort = localPort
+        if boundLocalPort != 0, let nwPort = NWEndpoint.Port(rawValue: boundLocalPort) {
+            if #available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *) {
+                params.allowLocalEndpointReuse = true
+            }
+            params.localEndpoint = .hostPort(host: "0.0.0.0", port: nwPort)
+        }
+        
+        let nwPort = NWEndpoint.Port(rawValue: port) ?? .any
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
+        connection.start(queue: queue)
+        connection.send(content: data, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
+    }
 }
 
 extension OSCUDPSocket: _OSCHandlerProtocol { }
@@ -250,5 +306,3 @@ extension OSCUDPSocket {
         }
     }
 }
-
-#endif

@@ -4,7 +4,6 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
 
 import Foundation
 @testable import OSCKit
@@ -197,7 +196,5 @@ struct OSCUDPSocket_Tests {
         
         await #expect(receiver.messages == sourceMessages)
     }
-    #endif
 }
 
-#endif

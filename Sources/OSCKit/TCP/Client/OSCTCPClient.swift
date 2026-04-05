@@ -4,10 +4,8 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
-
-@preconcurrency import CocoaAsyncSocket
 import Foundation
+import Network
 import OSCKitCore
 
 /// Connects to a remote host via TCP connection in order to send and receive OSC packets over the network.
@@ -22,11 +20,11 @@ import OSCKitCore
 /// What differentiates this client class from the server class is that the client class is designed to connect to a
 /// remote TCP server. (Whereas, the server is designed to listen for inbound connections.)
 public final class OSCTCPClient {
-    let tcpSocket: GCDAsyncSocket
-    let tcpDelegate: OSCTCPClientDelegate
+    private var tcpConnection: NWConnection?
     let queue: DispatchQueue
     var receiveHandler: OSCHandlerBlock?
     var notificationHandler: NotificationHandlerBlock?
+    private var _isConnected: Bool = false
     
     /// Notification handler closure.
     public typealias NotificationHandlerBlock = @Sendable (_ notification: Notification) -> Void
@@ -44,9 +42,7 @@ public final class OSCTCPClient {
     public let interface: String?
     
     /// Returns a boolean indicating whether the OSC socket is connected to the remote host.
-    public var isConnected: Bool {
-        tcpSocket.isConnected
-    }
+    public var isConnected: Bool { _isConnected }
     
     /// TCP packet framing mode.
     public let framingMode: OSCTCPFramingMode
@@ -84,10 +80,6 @@ public final class OSCTCPClient {
         let queue = queue ?? DispatchQueue(label: "com.orchetect.OSCKit.OSCTCPClient.queue")
         self.queue = queue
         self.receiveHandler = receiveHandler
-        
-        tcpDelegate = OSCTCPClientDelegate()
-        tcpSocket = GCDAsyncSocket(delegate: tcpDelegate, delegateQueue: queue, socketQueue: nil)
-        tcpDelegate.oscServer = self
     }
     
     deinit {
@@ -95,7 +87,7 @@ public final class OSCTCPClient {
     }
 }
 
-extension OSCTCPClient: @unchecked Sendable { } // TODO: unchecked
+extension OSCTCPClient: @unchecked Sendable { }
 
 // MARK: - Lifecycle
 
@@ -105,36 +97,76 @@ extension OSCTCPClient {
     /// - Parameters:
     ///   - timeout: Supply a timeout period in seconds.
     public func connect(timeout: TimeInterval = 5.0) throws {
-        try tcpSocket.connect(
-            toHost: remoteHost,
-            onPort: remotePort,
-            viaInterface: interface,
-            withTimeout: max(1.0, timeout) // negative values mean indefinite (no timeout) which is a bit dangerous
-        )
+        // Cancel any existing connection first.
+        tcpConnection?.cancel()
+        
+        let nwPort = NWEndpoint.Port(rawValue: remotePort) ?? .any
+        let connection = NWConnection(host: NWEndpoint.Host(remoteHost), port: nwPort, using: .tcp)
+        
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self._isConnected = true
+                self._generateConnectedNotification()
+                self._startReceiving(on: connection)
+            case .failed(let error):
+                self._isConnected = false
+                self._generateDisconnectedNotification(error: error)
+            case .cancelled:
+                self._isConnected = false
+                self._generateDisconnectedNotification(error: nil)
+            default:
+                break
+            }
+        }
+        
+        self.tcpConnection = connection
+        connection.start(queue: queue)
     }
     
     /// Close the connection, if any.
     public func close() {
-        tcpSocket.disconnectAfterWriting()
+        tcpConnection?.cancel()
+        tcpConnection = nil
+        _isConnected = false
+    }
+    
+    /// Continuously receive TCP data on the connection.
+    private func _startReceiving(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            
+            if let data, !data.isEmpty {
+                let (remoteHost, remotePort) = OSCTCPServer._remoteHostPort(from: connection)
+                self._handle(receivedData: data, remoteHost: remoteHost, remotePort: remotePort)
+            }
+            
+            if error == nil && !isComplete {
+                self._startReceiving(on: connection)
+            }
+        }
     }
 }
 
 // MARK: - Communication
 
 extension OSCTCPClient: _OSCTCPSendProtocol {
+    var _tcpSendConnection: NWConnection? { tcpConnection }
+    
     /// Send an OSC bundle or message to the host.
     public func send(_ oscPacket: OSCPacket) throws {
-        try _send(oscPacket, tag: 0)
+        try _send(oscPacket)
     }
     
     /// Send an OSC bundle to the host.
     public func send(_ oscBundle: OSCBundle) throws {
-        try _send(oscBundle, tag: 0)
+        try _send(oscBundle)
     }
     
     /// Send an OSC message to the host.
     public func send(_ oscMessage: OSCMessage) throws {
-        try _send(oscMessage, tag: 0)
+        try _send(oscMessage)
     }
 }
 
@@ -144,7 +176,7 @@ extension OSCTCPClient: _OSCTCPGeneratesClientNotificationsProtocol {
         notificationHandler?(notif)
     }
     
-    func _generateDisconnectedNotification(error: GCDAsyncSocketError?) {
+    func _generateDisconnectedNotification(error: NWError?) {
         let notif: Notification = .disconnected(error: error)
         notificationHandler?(notif)
     }
@@ -177,5 +209,3 @@ extension OSCTCPClient {
         }
     }
 }
-
-#endif

@@ -4,38 +4,49 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
-
-@preconcurrency import CocoaAsyncSocket
 import Foundation
+import Network
 import OSCKitCore
 
 extension OSCTCPServer {
     /// Internal class encapsulating a remote client connection session accepted by a local ``OSCTCPServer``.
     final class ClientConnection {
-        weak var delegate: OSCTCPServerDelegate?
-        let tcpSocket: GCDAsyncSocket
-        let remoteHost: String // cached, since GCDAsyncSocket resets it upon disconnection
-        let remotePort: UInt16 // cached, since GCDAsyncSocket resets it upon disconnection
-        let tcpDelegate: OSCTCPClientDelegate
-        let tcpSocketTag: Int
+        private let nwConnection: NWConnection
+        let remoteHost: String // cached, since NWConnection resets its endpoint upon disconnection
+        let remotePort: UInt16 // cached, since NWConnection resets its endpoint upon disconnection
+        let clientID: OSCTCPClientSessionID
         let framingMode: OSCTCPFramingMode
+        let queue: DispatchQueue
+        weak var server: OSCTCPServer?
         
         init(
-            tcpSocket: GCDAsyncSocket,
-            tcpSocketTag: Int,
+            nwConnection: NWConnection,
+            clientID: OSCTCPClientSessionID,
+            remoteHost: String,
+            remotePort: UInt16,
             framingMode: OSCTCPFramingMode,
-            delegate: OSCTCPServerDelegate?
+            queue: DispatchQueue,
+            server: OSCTCPServer?
         ) {
-            self.tcpSocket = tcpSocket
-            remoteHost = tcpSocket.connectedHost ?? ""
-            remotePort = tcpSocket.connectedPort
-            self.tcpSocketTag = tcpSocketTag
+            self.nwConnection = nwConnection
+            self.clientID = clientID
+            self.remoteHost = remoteHost
+            self.remotePort = remotePort
             self.framingMode = framingMode
-            self.delegate = delegate
+            self.queue = queue
+            self.server = server
             
-            tcpDelegate = OSCTCPClientDelegate()
-            tcpDelegate.oscServer = self
+            nwConnection.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .failed(let error):
+                    self._handleDisconnect(error: error)
+                case .cancelled:
+                    self._handleDisconnect(error: nil)
+                default:
+                    break
+                }
+            }
         }
         
         deinit {
@@ -44,70 +55,74 @@ extension OSCTCPServer {
     }
 }
 
-extension OSCTCPServer.ClientConnection: @unchecked Sendable { } // TODO: unchecked
+extension OSCTCPServer.ClientConnection: @unchecked Sendable { }
 
 // MARK: - Lifecycle
 
 extension OSCTCPServer.ClientConnection {
+    func startReceiving() {
+        _receiveNext()
+    }
+    
     func close() {
-        tcpSocket.disconnectAfterReadingAndWriting()
-        tcpSocket.delegate = nil
+        nwConnection.cancel()
+    }
+    
+    private func _receiveNext() {
+        nwConnection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            
+            if let data, !data.isEmpty {
+                self._handle(receivedData: data, remoteHost: self.remoteHost, remotePort: self.remotePort)
+            }
+            
+            if error == nil && !isComplete {
+                self._receiveNext()
+            } else if let nwError = error as? NWError {
+                self._handleDisconnect(error: nwError)
+            } else if error != nil || isComplete {
+                self._handleDisconnect(error: nil)
+            }
+        }
+    }
+    
+    private func _handleDisconnect(error: NWError?) {
+        guard let server else { return }
+        server._removeClient(clientID: clientID)
+        server._generateDisconnectedNotification(
+            remoteHost: remoteHost,
+            remotePort: remotePort,
+            clientID: clientID,
+            error: error
+        )
+        self.server = nil
     }
 }
 
 // MARK: - Communication
 
 extension OSCTCPServer.ClientConnection: _OSCTCPSendProtocol {
+    var _tcpSendConnection: NWConnection? { nwConnection }
+    
     func send(_ oscPacket: OSCPacket) throws {
-        try _send(oscPacket, tag: tcpSocketTag)
+        try _send(oscPacket)
     }
     
     func send(_ oscBundle: OSCBundle) throws {
-        try _send(oscBundle, tag: tcpSocketTag)
+        try _send(oscBundle)
     }
     
     func send(_ oscMessage: OSCMessage) throws {
-        try _send(oscMessage, tag: tcpSocketTag)
+        try _send(oscMessage)
     }
 }
 
 extension OSCTCPServer.ClientConnection: _OSCTCPHandlerProtocol {
-    var queue: DispatchQueue {
-        tcpSocket.delegateQueue ?? .global()
-    }
-    
     var timeTagMode: OSCTimeTagMode {
-        delegate?.oscServer?.timeTagMode ?? .ignore
+        server?.timeTagMode ?? .ignore
     }
     
     var receiveHandler: OSCHandlerBlock? {
-        delegate?.oscServer?.receiveHandler
+        server?.receiveHandler
     }
 }
-
-extension OSCTCPServer.ClientConnection: _OSCTCPGeneratesClientNotificationsProtocol {
-    // note that this is never called because when a remote connection closes, its socket does not fire
-    // `socketDidDisconnect(...)` in GCDAsyncSocketDelegate, but we have to implement this due to
-    // other protocol requirements
-    func _generateConnectedNotification() {
-        delegate?.oscServer?._generateConnectedNotification(
-            remoteHost: remoteHost,
-            remotePort: remotePort,
-            clientID: tcpSocketTag
-        )
-    }
-    
-    // note that this is never called because when a remote connection closes, its socket does not fire
-    // `socketDidDisconnect(...)` in GCDAsyncSocketDelegate, but we have to implement this due to
-    // other protocol requirements
-    func _generateDisconnectedNotification(error: GCDAsyncSocketError?) {
-        delegate?.oscServer?._generateDisconnectedNotification(
-            remoteHost: remoteHost,
-            remotePort: remotePort,
-            clientID: tcpSocketTag,
-            error: error
-        )
-    }
-}
-
-#endif

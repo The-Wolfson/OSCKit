@@ -4,16 +4,12 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
-
-@preconcurrency import CocoaAsyncSocket
+import Network
 
 protocol _OSCTCPGeneratesClientNotificationsProtocol {
     func _generateConnectedNotification()
     
     func _generateDisconnectedNotification(
-        error: GCDAsyncSocketError?
+        error: NWError?
     )
 }
-
-#endif

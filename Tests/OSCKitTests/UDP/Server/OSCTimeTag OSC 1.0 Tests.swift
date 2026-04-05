@@ -4,7 +4,6 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
 
 @testable import OSCKit
 import Testing
@@ -119,7 +118,6 @@ import Testing
             try await Task.sleep(seconds: 1.1) // allow for just over 1 second to accommodate testing overhead
         }
     }
-    #endif
     
     @Test
     func past() async throws {
@@ -142,4 +140,3 @@ import Testing
     }
 }
 
-#endif

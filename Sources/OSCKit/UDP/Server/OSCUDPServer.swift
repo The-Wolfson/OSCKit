@@ -4,10 +4,8 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
-
-@preconcurrency import CocoaAsyncSocket
 import Foundation
+import Network
 import OSCKitCore
 
 /// Receives OSC packets from the network on a specific UDP listen port.
@@ -16,8 +14,7 @@ import OSCKitCore
 /// on a specific local port. The default OSC port is 8000 but it may be set to any open port if
 /// desired.
 public final class OSCUDPServer {
-    let udpSocket: GCDAsyncUdpSocket
-    let udpDelegate = OSCUDPServerDelegate()
+    private var udpListener: NWListener?
     let queue: DispatchQueue
     var receiveHandler: OSCHandlerBlock?
     
@@ -27,7 +24,7 @@ public final class OSCUDPServer {
     /// UDP port used by the OSC server to listen for inbound OSC packets.
     /// This may only be set at the time of initialization.
     public var localPort: UInt16 {
-        udpSocket.localPort()
+        udpListener?.port?.rawValue ?? _localPort ?? 0
     }
 
     private var _localPort: UInt16?
@@ -84,9 +81,6 @@ public final class OSCUDPServer {
         let queue = queue ?? DispatchQueue(label: "com.orchetect.OSCKit.OSCUDPServer.queue")
         self.queue = queue
         self.receiveHandler = receiveHandler
-        
-        udpSocket = GCDAsyncUdpSocket(delegate: udpDelegate, delegateQueue: queue, socketQueue: nil)
-        udpDelegate.oscServer = self
     }
 }
 
@@ -101,21 +95,71 @@ extension OSCUDPServer {
         
         stop()
         
-        try udpSocket.enableReusePort(isPortReuseEnabled)
-        try udpSocket.bind(
-            toPort: _localPort ?? 0, // 0 causes system to assign random open port
-            interface: interface
-        )
-        try udpSocket.beginReceiving()
+        let params = NWParameters.udp
+        
+        if isPortReuseEnabled {
+            if #available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *) {
+                params.allowLocalEndpointReuse = true
+            }
+        }
+        
+        let port: NWEndpoint.Port = _localPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+        let listener = try NWListener(using: params, on: port)
+        
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            connection.start(queue: self.queue)
+            self._receiveNext(on: connection)
+        }
+        
+        self.udpListener = listener
+        listener.start(queue: queue)
         
         isStarted = true
     }
     
     /// Stops listening for data and closes the OSC server port.
     public func stop() {
-        udpSocket.close()
+        udpListener?.cancel()
+        udpListener = nil
         
         isStarted = false
+    }
+    
+    /// Schedules the next receive on a UDP connection accepted by the listener.
+    private func _receiveNext(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, _, error in
+            guard let self else { return }
+            
+            if let data, !data.isEmpty {
+                let (remoteHost, remotePort) = Self._remoteHostPort(from: connection)
+                self._handleReceived(data: data, remoteHost: remoteHost, remotePort: remotePort)
+            }
+            
+            if error == nil {
+                self._receiveNext(on: connection)
+            }
+        }
+    }
+    
+    /// Extract a host string and port from an NWConnection's remote endpoint.
+    static func _remoteHostPort(from connection: NWConnection) -> (host: String, port: UInt16) {
+        if case .hostPort(let host, let port) = connection.endpoint {
+            return (String(describing: host), port.rawValue)
+        }
+        return ("", 0)
+    }
+    
+    /// Parse and dispatch incoming OSC data.
+    private func _handleReceived(data: Data, remoteHost: String, remotePort: UInt16) {
+        do {
+            guard let packet = try OSCPacket(from: data) else { return }
+            _handle(packet: packet, remoteHost: remoteHost, remotePort: remotePort)
+        } catch {
+            #if DEBUG
+            print("OSC parse error: \(error.localizedDescription)")
+            #endif
+        }
     }
 }
 
@@ -138,5 +182,3 @@ extension OSCUDPServer {
         }
     }
 }
-
-#endif

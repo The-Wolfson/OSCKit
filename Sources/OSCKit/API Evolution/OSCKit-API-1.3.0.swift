@@ -4,7 +4,6 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
 
 import Foundation
 
@@ -77,4 +76,3 @@ extension OSCUDPSocket {
     }
 }
 
-#endif

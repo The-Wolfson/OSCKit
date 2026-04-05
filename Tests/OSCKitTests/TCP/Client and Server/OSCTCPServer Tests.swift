@@ -4,7 +4,6 @@
 //  © 2020-2026 Steffan Andrews • Licensed under MIT License
 //
 
-#if !os(watchOS)
 
 import Foundation
 @testable import OSCKit
@@ -217,7 +216,6 @@ struct OSCTCPServer_Tests {
         // double-check Cycle 1 results have not changed
         await #expect(serverReceiver.messages.count == expectedMsgCount) // should not have changed
     }
-    #endif
     
     /// Check that connections are added when an incoming connection is made,
     /// and check that connections are removed when a connection is closed remotely.
@@ -440,4 +438,3 @@ struct OSCTCPServer_Tests {
     // TODO: add tests for clients connecting, disconnecting, and reconnecting (check for memory leaks?)
 }
 
-#endif
