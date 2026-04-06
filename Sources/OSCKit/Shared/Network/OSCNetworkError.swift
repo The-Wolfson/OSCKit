@@ -8,8 +8,9 @@
 import CocoaAsyncSocket
 import Foundation
 
-public enum OSCNetworkError: Error {
+public enum OSCNetworkError: LocalizedError {
     case other(_ details: String)
     case clientNotFound(id: OSCTCPClientSessionID)
-    case noRemoteHost //OSC TCP client socket is not connected to a remote host.
+    ///OSC TCP client socket is not connected to a remote host.
+    case noRemoteHost
 }
