@@ -90,7 +90,6 @@ struct OSCUDPSocket_Tests {
             remoteHost: "localhost",
             remotePort: nil,
             timeTagMode: .ignore,
-            isIPv4BroadcastEnabled: false,
             queue: nil,
             receiveHandler: nil
         )
@@ -146,7 +145,6 @@ struct OSCUDPSocket_Tests {
             remoteHost: "localhost",
             remotePort: nil, // gets set to same port as localPort
             timeTagMode: .ignore,
-            isIPv4BroadcastEnabled: false,
             queue: nil,
             receiveHandler: nil
         )

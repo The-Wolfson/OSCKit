@@ -6,8 +6,8 @@
 
 #if !os(watchOS)
 
-@preconcurrency import CocoaAsyncSocket
 import Foundation
+import Network
 
 /// Sends and receives OSC packets over the network by binding a single local UDP port to both send
 /// OSC packets from and listen for incoming packets.
@@ -22,8 +22,8 @@ import Foundation
 /// example: if an OSC message was sent from port 8000 to the X32's port 10023, the X32 will respond
 /// by sending OSC messages back to you on port 8000.
 public final class OSCUDPSocket {
-    let udpSocket: GCDAsyncUdpSocket
-    let udpDelegate = OSCUDPServerDelegate()
+    var udpListener: NWListener?
+    var udpConnection: NWConnection?
     let queue: DispatchQueue
     var receiveHandler: OSCHandlerBlock?
     
@@ -47,7 +47,7 @@ public final class OSCUDPSocket {
     /// > property may return a value of `0` until the first successful call to ``send(_:to:port:)-(OSCPacket,_,_)``
     /// > is made.
     public var localPort: UInt16 {
-        udpSocket.localPort()
+        udpListener?.port?.rawValue ?? 0
     }
 
     private var _localPort: UInt16?
@@ -68,30 +68,10 @@ public final class OSCUDPSocket {
     /// Network interface to restrict connections to.
     public private(set) var interface: String?
     
-    /// Enable sending IPv4 broadcast messages from the socket.
-    ///
-    /// By default, the socket will not allow you to send broadcast messages as a network safeguard
-    /// and it is an opt-in feature.
-    ///
-    /// A broadcast UDP message can be sent to a correctly formatted broadcast address. A broadcast
-    /// address is the highest IP address for a subnet or a network.
-    ///
-    /// For example, a class C network with first octet `192`, one subnet, and subnet mask of
-    /// `255.255.255.0` would have a broadcast address of `192.168.0.255` and would effectively send
-    /// to `192.168.0.*` (where `*` is the range `1 ... 254`).
-    ///
-    /// 255.255.255.255 is a special broadcast address which targets all hosts on a local network.
-    ///
-    /// For more information on IPv4 broadcast addresses, see
-    /// [Broadcast Address (Wikipedia)](https://en.wikipedia.org/wiki/Broadcast_address) and [Subnet
-    /// Calculator](https://www.subnet-calculator.com).
-    ///
-    /// Internet Protocol version 6 (IPv6) does not implement this method of broadcast, and
-    /// therefore does not define broadcast addresses. Instead, IPv6 uses multicast addressing.
-    public let isIPv4BroadcastEnabled: Bool
-    
     /// Returns a boolean indicating whether the OSC socket has been started.
-    public private(set) var isStarted: Bool = false
+    public var isStarted: Bool {
+        udpListener?.state == .ready
+    }
     
     /// Initialize with a remote hostname and UDP port.
     ///
@@ -107,8 +87,6 @@ public final class OSCUDPSocket {
     ///     If `nil` or `0`, the `localPort` value will be used.
     ///   - interface: Optionally specify a network interface for which to constrain communication.
     ///   - timeTagMode: OSC time-tag mode. The default is recommended.
-    ///   - isIPv4BroadcastEnabled: Enable sending IPv4 broadcast messages from the socket.
-    ///     See ``isIPv4BroadcastEnabled`` for more details.
     ///   - queue: Optionally supply a custom dispatch queue for receiving OSC packets and dispatching the
     ///     handler callback closure. If `nil`, a dedicated internal background queue will be used.
     ///   - receiveHandler: Handler to call when OSC bundles or messages are received.
@@ -118,7 +96,6 @@ public final class OSCUDPSocket {
         remotePort: UInt16? = nil,
         interface: String? = nil,
         timeTagMode: OSCTimeTagMode = .ignore,
-        isIPv4BroadcastEnabled: Bool = false,
         queue: DispatchQueue? = nil,
         receiveHandler: OSCHandlerBlock? = nil
     ) {
@@ -127,13 +104,9 @@ public final class OSCUDPSocket {
         _remotePort = (remotePort == nil || remotePort == 0) ? nil : remotePort
         self.interface = interface
         self.timeTagMode = timeTagMode
-        self.isIPv4BroadcastEnabled = isIPv4BroadcastEnabled
         let queue = queue ?? DispatchQueue(label: "com.orchetect.OSCKit.OSCUDPSocket.queue")
         self.queue = queue
         self.receiveHandler = receiveHandler
-        
-        udpSocket = GCDAsyncUdpSocket(delegate: udpDelegate, delegateQueue: queue, socketQueue: nil)
-        udpDelegate.oscServer = self
     }
 }
 
@@ -146,25 +119,58 @@ extension OSCUDPSocket {
     public func start() throws {
         guard !isStarted else { return }
         
-        try udpSocket.enableBroadcast(isIPv4BroadcastEnabled)
-        try udpSocket.bind(
-            toPort: _localPort ?? 0, // 0 causes system to assign random open port
-            interface: interface
-        )
-        try udpSocket.beginReceiving()
+        let port = _localPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+        let listener = try NWListener(using: _parameters, on: port)
         
-        isStarted = true
+        listener.newConnectionHandler = { [weak self] connection in
+             guard let self else { return }
+            print("OSCUDPSocket", "-", "New Connection From:", connection.endpoint)
+             connection.start(queue: self.queue)
+             self._receiveNext(on: connection)
+        }
+        
+        listener.stateUpdateHandler = { state in
+            print("OSCUDPSocket", "-", "Listener State:", state)
+        }
+        udpListener = listener
+        listener.start(queue: queue)
     }
     
     /// Stops listening for data and closes the OSC port.
     public func stop() {
-        udpSocket.close()
-        
-        isStarted = false
+        udpListener?.cancel()
+        udpListener = nil
     }
 }
 
 // MARK: - Communication
+
+extension OSCUDPSocket {
+    private func _receiveNext(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                guard case .hostPort(let host, let port) = connection.endpoint else { return }
+                self._handle(data: data, remoteHost: host.debugDescription, remotePort: port.rawValue)
+            }
+            
+            if error == nil {
+                self._receiveNext(on: connection)
+            }
+        }
+    }
+    
+    private func _handle(data: Data, remoteHost: String, remotePort: UInt16) {
+        do {
+            guard let packet = try OSCPacket(from: data) else { return }
+            _handle(packet: packet, remoteHost: remoteHost, remotePort: remotePort)
+        } catch {
+            #if DEBUG
+            print("OSC parse error: \(error.localizedDescription)")
+            #endif
+        }
+    }
+}
 
 extension OSCUDPSocket {
     /// Send an OSC bundle or message to the remote host.
@@ -179,31 +185,29 @@ extension OSCUDPSocket {
         port: UInt16? = nil
     ) throws {
         guard isStarted else {
-            throw GCDAsyncUdpSocketError(
-                .closedError,
-                userInfo: ["Reason": "OSC socket has not been started yet."]
-            )
+            throw OSCNetworkError.notStarted
         }
         
         guard let toHost = host ?? remoteHost else {
-            throw GCDAsyncUdpSocketError(
-                .badParamError,
-                userInfo: [
-                    "Reason":
-                        "Remote host is not specified in OSCUDPSocket.remoteHost property or in host parameter in call to send()."
-                ]
-            )
+            //Remote host is not specified in OSCUDPSocket.remoteHost property or in host parameter in call to send().
+            throw OSCNetworkError.noRemoteHost
         }
         
         let data = try oscPacket.rawData()
         
-        udpSocket.send(
-            data,
-            toHost: toHost,
-            port: port ?? remotePort,
-            withTimeout: 1.0,
-            tag: 0
-        )
+        let udpHost = NWEndpoint.Host(toHost)
+        let udpPort = NWEndpoint.Port(rawValue: port ?? remotePort) ?? .any
+        let endpoint = NWEndpoint.hostPort(host: udpHost, port: udpPort)
+        
+        if udpConnection == nil, udpConnection?.endpoint != endpoint {
+            udpConnection?.cancel()
+            
+            let connection = NWConnection(to: endpoint, using: _parameters)
+            connection.start(queue: queue)
+            udpConnection = connection
+        }
+        
+        udpConnection?.send(content: data, completion: .contentProcessed({ _ in }))
     }
     
     /// Send an OSC bundle to the remote host.
@@ -248,6 +252,32 @@ extension OSCUDPSocket {
         queue.async {
             self.receiveHandler = handler
         }
+    }
+}
+
+//Helper properties for NWConnection
+extension OSCUDPSocket {
+    private var _remoteEndpoint: NWEndpoint {
+        let host = remoteHost.flatMap { NWEndpoint.Host($0) } ?? .ipv4(.any)
+        let port = NWEndpoint.Port(rawValue: remotePort) ?? .any
+        
+        let endpoint = NWEndpoint.hostPort(host: host, port: port)
+        
+        return endpoint
+    }
+
+    private var _parameters: NWParameters {
+        let parameters = NWParameters.udp
+        
+        let host = interface.flatMap { NWEndpoint.Host($0) } ?? .ipv4(.any)
+        let port = _localPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+        
+        parameters.requiredLocalEndpoint = .hostPort(host: host, port: port)
+        
+        // Allow port reuse so the listener and outgoing connections can share the same local port.
+        parameters.allowLocalEndpointReuse = true
+        
+        return parameters
     }
 }
 

@@ -15,15 +15,15 @@ import Testing
     func oscClientAccess() async throws {
         let oscClient = OSCUDPClient()
         
-        oscClient.isIPv4BroadcastEnabled = true
-        oscClient.isIPv4BroadcastEnabled = false
+        // oscClient.isIPv4BroadcastEnabled = true -> Deprecated
+        // oscClient.isIPv4BroadcastEnabled = false -> Deprecated
         oscClient.isPortReuseEnabled = true
         oscClient.isPortReuseEnabled = false
         
         _ = OSCUDPClient(localPort: 8002)
         _ = OSCUDPClient(localPort: 8003, isPortReuseEnabled: true)
-        _ = OSCUDPClient(localPort: 8004, isPortReuseEnabled: true, isIPv4BroadcastEnabled: true)
-        _ = OSCUDPClient(localPort: 8005, isIPv4BroadcastEnabled: true)
+        _ = OSCUDPClient(localPort: 8004, isPortReuseEnabled: true, queue: .main)
+        _ = OSCUDPClient(localPort: 8005, queue: .main)
     }
     
     @Test
@@ -59,7 +59,7 @@ import Testing
         // oscSocket.remoteHost = "192.168.0.10" // immutable actor
         _ = oscSocket.remotePort
         // oscSocket.remotePort = 8000 // immutable actor
-        _ = oscSocket.isIPv4BroadcastEnabled
+        //_ = oscSocket.isIPv4BroadcastEnabled -> Deprecated
         // oscSocket.isIPv4BroadcastEnabled = true // immutable actor
         oscSocket.setReceiveHandler { message, timeTag, host, port in
             print(message)
@@ -82,7 +82,7 @@ import Testing
         _ = OSCUDPSocket(
             localPort: 8013,
             timeTagMode: .ignore,
-            isIPv4BroadcastEnabled: true
+            queue: nil
         ) { message, timeTag, host, port in
             print(message)
         }
@@ -91,7 +91,7 @@ import Testing
             remoteHost: "192.168.0.10",
             remotePort: 8000,
             timeTagMode: .ignore,
-            isIPv4BroadcastEnabled: true
+            queue: nil
         ) { message, timeTag, host, port in
             print(message)
         }
